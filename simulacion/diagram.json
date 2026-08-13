@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "author": "Equipo IoT",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "board-esp32-devkit-c-v4", "id": "esp", "top": 0, "left": 0, "attrs": {} },
+    { "type": "wokwi-dht22", "id": "dht1", "top": -120, "left": 240, "attrs": {} },
+    { "type": "wokwi-hc-sr04", "id": "ultra1", "top": -105, "left": 440, "attrs": { "distance": "40" } },
+    { "type": "wokwi-led", "id": "ledGreen", "top": -120, "left": -160, "attrs": { "color": "green" } },
+    { "type": "wokwi-led", "id": "ledYellow", "top": -60, "left": -160, "attrs": { "color": "yellow" } },
+    { "type": "wokwi-led", "id": "ledRed", "top": 0, "left": -160, "attrs": { "color": "red" } },
+    { "type": "wokwi-buzzer", "id": "buzzer1", "top": 100, "left": -170, "attrs": {} },
+    { "type": "wokwi-lcd1602", "id": "lcd1", "top": 190, "left": 80, "attrs": { "pins": "i2c" } }
+  ],
+  "connections": [
+    [ "esp:3V3", "dht1:VCC", "red", [] ],
+    [ "esp:GND.1", "dht1:GND", "black", [] ],
+    [ "esp:15", "dht1:SDA", "green", [] ],
+
+    [ "esp:5", "ultra1:TRIG", "orange", [] ],
+    [ "esp:18", "ultra1:ECHO", "cyan", [] ],
+    [ "esp:5V", "ultra1:VCC", "red", [] ],
+    [ "esp:GND.1", "ultra1:GND", "black", [] ],
+
+    [ "esp:25", "ledGreen:A", "green", [] ],
+    [ "ledGreen:C", "esp:GND.1", "black", [] ],
+
+    [ "esp:26", "ledYellow:A", "yellow", [] ],
+    [ "ledYellow:C", "esp:GND.1", "black", [] ],
+
+    [ "esp:27", "ledRed:A", "red", [] ],
+    [ "ledRed:C", "esp:GND.1", "black", [] ],
+
+    [ "esp:14", "buzzer1:1", "purple", [] ],
+    [ "buzzer1:2", "esp:GND.1", "black", [] ],
+
+    [ "esp:3V3", "lcd1:VCC", "red", [] ],
+    [ "esp:GND.1", "lcd1:GND", "black", [] ],
+    [ "esp:21", "lcd1:SDA", "blue", [] ],
+    [ "esp:22", "lcd1:SCL", "green", [] ]
+  ],
+  "dependencies": {}
+}
