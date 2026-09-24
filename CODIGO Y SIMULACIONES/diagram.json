@@ -6,11 +6,14 @@
     { "type": "board-esp32-devkit-c-v4", "id": "esp", "top": 0, "left": 0, "attrs": {} },
     { "type": "wokwi-dht22", "id": "dht1", "top": -120, "left": 240, "attrs": {} },
     { "type": "wokwi-hc-sr04", "id": "ultra1", "top": -105, "left": 440, "attrs": { "distance": "40" } },
+    { "type": "wokwi-bmp280", "id": "bmp1", "top": 115, "left": 410, "attrs": {} },
+    { "type": "wokwi-photoresistor-sensor", "id": "ldr1", "top": 95, "left": 610, "attrs": { "lux": "800" } },
     { "type": "wokwi-led", "id": "ledGreen", "top": -120, "left": -160, "attrs": { "color": "green" } },
     { "type": "wokwi-led", "id": "ledYellow", "top": -60, "left": -160, "attrs": { "color": "yellow" } },
     { "type": "wokwi-led", "id": "ledRed", "top": 0, "left": -160, "attrs": { "color": "red" } },
     { "type": "wokwi-buzzer", "id": "buzzer1", "top": 100, "left": -170, "attrs": {} },
-    { "type": "wokwi-lcd1602", "id": "lcd1", "top": 190, "left": 80, "attrs": { "pins": "i2c" } }
+    { "type": "wokwi-pushbutton", "id": "btnMute", "top": 180, "left": -180, "attrs": { "color": "blue", "label": "MUTE" } },
+    { "type": "board-ssd1306", "id": "oled1", "top": 190, "left": 80, "attrs": { "i2cAddress": "0x3c" } }
   ],
   "connections": [
     [ "esp:3V3", "dht1:VCC", "red", [] ],
@@ -21,6 +24,15 @@
     [ "esp:18", "ultra1:ECHO", "cyan", [] ],
     [ "esp:5V", "ultra1:VCC", "red", [] ],
     [ "esp:GND.1", "ultra1:GND", "black", [] ],
+
+    [ "esp:3V3", "bmp1:VCC", "red", [] ],
+    [ "esp:GND.1", "bmp1:GND", "black", [] ],
+    [ "esp:21", "bmp1:SDA", "blue", [] ],
+    [ "esp:22", "bmp1:SCL", "green", [] ],
+
+    [ "esp:3V3", "ldr1:VCC", "red", [] ],
+    [ "esp:GND.1", "ldr1:GND", "black", [] ],
+    [ "esp:35", "ldr1:AO", "yellow", [] ],
 
     [ "esp:25", "ledGreen:A", "green", [] ],
     [ "ledGreen:C", "esp:GND.1", "black", [] ],
@@ -34,10 +46,13 @@
     [ "esp:14", "buzzer1:1", "purple", [] ],
     [ "buzzer1:2", "esp:GND.1", "black", [] ],
 
-    [ "esp:3V3", "lcd1:VCC", "red", [] ],
-    [ "esp:GND.1", "lcd1:GND", "black", [] ],
-    [ "esp:21", "lcd1:SDA", "blue", [] ],
-    [ "esp:22", "lcd1:SCL", "green", [] ]
+    [ "esp:33", "btnMute:1.l", "blue", [] ],
+    [ "esp:GND.1", "btnMute:2.l", "black", [] ],
+
+    [ "esp:3V3", "oled1:VCC", "red", [] ],
+    [ "esp:GND.1", "oled1:GND", "black", [] ],
+    [ "esp:21", "oled1:SDA", "blue", [] ],
+    [ "esp:22", "oled1:SCL", "green", [] ]
   ],
   "dependencies": {}
 }
