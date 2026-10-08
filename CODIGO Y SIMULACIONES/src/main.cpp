@@ -14,11 +14,12 @@
 #define ULTRASONIC_ECHO_PIN 18
 #define LDR_PIN 35
 
-#define LED_GREEN 25
+#define LED_GREEN 27
 #define LED_YELLOW 26
-#define LED_RED 27
+#define LED_RED 25
 #define BUZZER_PIN 14
-#define MUTE_BUTTON_PIN 33
+
+#define PAGE_BUTTON_PIN 33 
 
 #define I2C_SDA 21
 #define I2C_SCL 22
@@ -26,12 +27,18 @@
 #define SCREEN_HEIGHT 64
 #define OLED_RESET -1
 
-const char* WIFI_SSID = "Wokwi-GUEST";
-const char* WIFI_PASSWORD = "";
+// Credenciales para la red que va a crear el ESP32 (Modo Access Point)
+const char* AP_SSID = "Monitor_Tomine"; 
+const char* AP_PASSWORD = "password123";
 const char* DASHBOARD_USER = "autoridad";
 const char* DASHBOARD_PASSWORD = "tomine";
 
-const float TANK_DEPTH_CM = 100.0;
+// =========================================================================
+// CALIBRACIÓN DEL EMBALSE
+// distancia en cm desde el sensor hasta el suelo vacío
+const float TANK_DEPTH_CM = 138.5; 
+// =========================================================================
+
 const uint16_t HISTORY_SIZE = 30;
 const uint32_t SAMPLE_PERIOD_MS = 2000;
 const uint32_t BUTTON_DEBOUNCE_MS = 300;
@@ -69,8 +76,11 @@ SemaphoreHandle_t dataMutex;
 TaskHandle_t sensorTaskHandle;
 bool bmpAvailable = false;
 bool alarmMuted = false;
-bool previousButtonState = HIGH;
-uint32_t lastButtonToggle = 0;
+
+uint8_t currentDisplayPage = 0;
+const uint8_t MAX_PAGES = 4;
+bool previousPageButtonState = HIGH;
+uint32_t lastPageButtonToggle = 0;
 
 SensorReadings getCurrentData();
 void updateDisplay(const SensorReadings& data);
@@ -133,27 +143,19 @@ AlertState evaluateState(const SensorReadings& data) {
 
 const char* stateToText(AlertState state) {
   switch (state) {
-    case NORMAL:
-      return "NORMAL";
-    case ALERTA:
-      return "ALERTA";
-    case CRITICO:
-      return "CRITICO";
-    default:
-      return "DESCONOCIDO";
+    case NORMAL: return "NORMAL";
+    case ALERTA: return "ALERTA";
+    case CRITICO: return "CRITICO";
+    default: return "DESCONOCIDO";
   }
 }
 
 const char* stateToLcdText(AlertState state) {
   switch (state) {
-    case NORMAL:
-      return "OK";
-    case ALERTA:
-      return "ALER";
-    case CRITICO:
-      return "CRIT";
-    default:
-      return "ERR";
+    case NORMAL: return "OK";
+    case ALERTA: return "ALER";
+    case CRITICO: return "CRIT";
+    default: return "ERR";
   }
 }
 
@@ -185,16 +187,18 @@ void setAlarmMuted(bool muted) {
   }
 }
 
-void handleMuteButton() {
-  bool buttonState = digitalRead(MUTE_BUTTON_PIN);
-  bool buttonPressed = previousButtonState == HIGH && buttonState == LOW;
+void handlePageButton() {
+  bool buttonState = digitalRead(PAGE_BUTTON_PIN);
+  bool buttonPressed = previousPageButtonState == HIGH && buttonState == LOW;
 
-  if (buttonPressed && millis() - lastButtonToggle > BUTTON_DEBOUNCE_MS) {
-    setAlarmMuted(!alarmMuted);
-    lastButtonToggle = millis();
+  if (buttonPressed && millis() - lastPageButtonToggle > BUTTON_DEBOUNCE_MS) {
+    currentDisplayPage = (currentDisplayPage + 1) % MAX_PAGES;
+    lastPageButtonToggle = millis();
+    
+    updateDisplay(getCurrentData());
   }
 
-  previousButtonState = buttonState;
+  previousPageButtonState = buttonState;
 }
 
 void showMessage(const char* firstLine, const char* secondLine = "") {
@@ -209,31 +213,72 @@ void showMessage(const char* firstLine, const char* secondLine = "") {
 
 void updateDisplay(const SensorReadings& data) {
   display.clearDisplay();
-  display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
+
+  display.setTextSize(1);
   display.setCursor(0, 0);
-  display.print("Estado: ");
-  display.println(stateToLcdText(data.state));
-  display.print("Nivel: ");
-  display.print(data.waterLevel, 0);
-  display.print("% D:");
-  display.print(data.waterDistance, 0);
-  display.println("cm");
-  display.print("T:");
-  display.print(data.temperature, 1);
-  display.print(" H:");
-  display.print(data.humidity, 0);
-  display.println("%");
-  display.print("Sol:");
-  display.print(data.solarRadiation, 0);
-  display.print("% P:");
-  display.print(data.pressure, 0);
-  display.println("hPa");
-  display.print("Evap: ");
-  display.print(data.evaporationRisk, 0);
-  display.print("% Alarm:");
-  display.println(data.alarmMuted ? "OFF" : "ON");
-  display.print(WiFi.localIP());
+  display.print("Est:");
+  display.print(stateToLcdText(data.state));
+  display.print(" P");
+  display.print(currentDisplayPage + 1);
+  display.print("/");
+  display.print(MAX_PAGES);
+  display.drawLine(0, 10, 128, 10, SSD1306_WHITE); 
+
+  display.setCursor(0, 15);
+
+  switch (currentDisplayPage) {
+    case 0:
+      display.setTextSize(1);
+      display.println("Nivel del Agua:");
+      display.setCursor(0, 30);
+      display.setTextSize(3); 
+      display.print(data.waterLevel, 0);
+      display.println("%");
+      break;
+
+    case 1:
+      display.setTextSize(1);
+      display.println("Temperatura:");
+      display.setTextSize(2);
+      display.print(data.temperature, 1);
+      display.println(" C");
+      display.setTextSize(1);
+      display.println("Humedad:");
+      display.setTextSize(2);
+      display.print(data.humidity, 0);
+      display.println(" %");
+      break;
+
+    case 2:
+      display.setTextSize(1);
+      display.print("Radiacion: ");
+      display.print(data.solarRadiation, 0);
+      display.println(" %");
+      display.println("");
+      display.print("Presion:   ");
+      display.print(data.pressure, 0);
+      display.println(" hPa");
+      display.println("");
+      display.print("Riesgo Evp:");
+      display.print(data.evaporationRisk, 0);
+      display.println(" %");
+      break;
+
+    case 3:
+      display.setTextSize(1);
+      display.print("Alarma: ");
+      display.println(data.alarmMuted ? "SILENCIADA" : "ACTIVA");
+      display.println("");
+      display.println("IP Red Local (AP):");
+      display.println(WiFi.softAPIP());
+      display.println("");
+      display.print("Distancia: ");
+      display.print(data.waterDistance, 1);
+      display.println(" cm");
+      break;
+  }
+  
   display.display();
 }
 
@@ -255,9 +300,8 @@ bool readSensors(SensorReadings& data) {
   data.timestamp = millis();
 
   return !isnan(data.temperature) &&
-         !isnan(data.humidity) &&
-         !isnan(data.waterDistance) &&
-         !isnan(data.pressure);
+       !isnan(data.humidity) &&
+       !isnan(data.waterDistance);
 }
 
 void storeReading(const SensorReadings& data) {
@@ -341,7 +385,6 @@ void handleDashboard() {
   if (!requireAuth()) {
     return;
   }
-
   SensorReadings data = getCurrentData();
   server.send(200, "text/html", dashboardHtml(data));
 }
@@ -350,7 +393,6 @@ void handleStatusApi() {
   if (!requireAuth()) {
     return;
   }
-
   SensorReadings data = getCurrentData();
   String json;
   json.reserve(512);
@@ -369,20 +411,14 @@ void handleStatusApi() {
 }
 
 void handleAlarmOff() {
-  if (!requireAuth()) {
-    return;
-  }
-
+  if (!requireAuth()) { return; }
   setAlarmMuted(true);
   server.sendHeader("Location", "/");
   server.send(303);
 }
 
 void handleAlarmOn() {
-  if (!requireAuth()) {
-    return;
-  }
-
+  if (!requireAuth()) { return; }
   setAlarmMuted(false);
   server.sendHeader("Location", "/");
   server.send(303);
@@ -397,24 +433,19 @@ void setupDashboardServer() {
 }
 
 void printSerialReport(const SensorReadings& data) {
-  Serial.print("Nivel: ");
-  Serial.print(data.waterLevel);
-  Serial.print("% | Distancia: ");
-  Serial.print(data.waterDistance);
-  Serial.print(" cm | Temp: ");
-  Serial.print(data.temperature);
-  Serial.print(" C | Humedad: ");
-  Serial.print(data.humidity);
-  Serial.print("% | Presion: ");
-  Serial.print(data.pressure);
-  Serial.print(" hPa | Radiacion: ");
-  Serial.print(data.solarRadiation);
-  Serial.print("% | Riesgo evaporacion: ");
-  Serial.print(data.evaporationRisk);
-  Serial.print("% | Estado: ");
-  Serial.print(stateToText(data.state));
-  Serial.print(" | Alarma: ");
-  Serial.println(data.alarmMuted ? "SILENCIADA" : "ACTIVA");
+  Serial.println("=========================================");
+  Serial.println("       DATOS DE SENSORES EN TIEMPO REAL  ");
+  Serial.println("=========================================");
+  Serial.print("Nivel de Agua:       "); Serial.print(data.waterLevel); Serial.println(" %");
+  Serial.print("Distancia HC-SR04:   "); Serial.print(data.waterDistance); Serial.println(" cm");
+  Serial.print("Temperatura DHT22:   "); Serial.print(data.temperature); Serial.println(" C");
+  Serial.print("Humedad DHT22:       "); Serial.print(data.humidity); Serial.println(" %");
+  Serial.print("Presion BMP280:      "); Serial.print(data.pressure); Serial.println(" hPa");
+  Serial.print("Radiacion (LDR):     "); Serial.print(data.solarRadiation); Serial.println(" %");
+  Serial.print("Riesgo Evaporacion:  "); Serial.print(data.evaporationRisk); Serial.println(" %");
+  Serial.print("Estado de Alerta:    "); Serial.println(stateToText(data.state));
+  Serial.print("Alarma Sonora:       "); Serial.println(data.alarmMuted ? "SILENCIADA (Web)" : "ACTIVA");
+  Serial.println("=========================================\n");
 }
 
 void sensorTask(void* parameter) {
@@ -428,9 +459,10 @@ void sensorTask(void* parameter) {
 
       applyAlertState(data.state, data.alarmMuted);
       updateDisplay(data);
+      
       printSerialReport(data);
     } else {
-      Serial.println("Error leyendo sensores");
+      Serial.println("Error leyendo sensores. Verifique las conexiones.");
       showMessage("Error sensores", "Revise conexion");
     }
 
@@ -443,7 +475,7 @@ void setup() {
 
   Wire.begin(I2C_SDA, I2C_SCL);
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println("Error iniciando pantalla OLED");
+    Serial.println("Error iniciando pantalla OLED externa");
   }
   showMessage("Monitor hidrico", "Iniciando...");
 
@@ -457,8 +489,9 @@ void setup() {
   pinMode(ULTRASONIC_TRIG_PIN, OUTPUT);
   pinMode(ULTRASONIC_ECHO_PIN, INPUT);
   pinMode(LDR_PIN, INPUT);
-  pinMode(MUTE_BUTTON_PIN, INPUT_PULLUP);
-  previousButtonState = digitalRead(MUTE_BUTTON_PIN);
+  
+  pinMode(PAGE_BUTTON_PIN, INPUT_PULLUP);
+  previousPageButtonState = digitalRead(PAGE_BUTTON_PIN);
 
   if (!bmpAvailable) {
     showMessage("Error BMP280", "Revise I2C");
@@ -466,15 +499,18 @@ void setup() {
     delay(2000);
   }
 
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  showMessage("Conectando WiFi");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(250);
-    Serial.print(".");
-  }
-  Serial.println();
-  Serial.print("Tablero local: http://");
-  Serial.println(WiFi.localIP());
+  // Configuración de red en Modo Access Point (AP)
+  showMessage("Creando Wi-Fi", AP_SSID);
+  Serial.print("Configurando red Wi-Fi propia (Modo AP)...");
+  
+  WiFi.softAP(AP_SSID, AP_PASSWORD);
+  IPAddress myIP = WiFi.softAPIP();
+  
+  Serial.println("\nRed AP creada exitosamente.");
+  Serial.print("Nombre de la red (SSID): ");
+  Serial.println(AP_SSID);
+  Serial.print("IP del servidor Web: http://");
+  Serial.println(myIP);
 
   dataMutex = xSemaphoreCreateMutex();
   setupDashboardServer();
@@ -493,7 +529,7 @@ void setup() {
 }
 
 void loop() {
-  handleMuteButton();
+  handlePageButton(); 
   server.handleClient();
   delay(5);
 }
