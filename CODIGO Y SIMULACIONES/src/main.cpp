@@ -6,6 +6,9 @@
 #include <WebServer.h>
 #include <WiFi.h>
 #include <Wire.h>
+#include <PubSubClient.h>
+#include <stdio.h>
+#include <string.h>
 
 #define DHT_PIN 15
 #define DHT_TYPE DHT22
@@ -27,11 +30,19 @@
 #define SCREEN_HEIGHT 64
 #define OLED_RESET -1
 
-// Credenciales para la red que va a crear el ESP32 (Modo Access Point)
-const char* AP_SSID = "Monitor_Tomine"; 
-const char* AP_PASSWORD = "password123";
+// Credenciales de la WLAN compartida con la Raspberry Pi.
+const char* WIFI_SSID = "CAMBIAR_POR_SSID_WLAN";
+const char* WIFI_PASSWORD = "CAMBIAR_POR_CLAVE_WLAN";
 const char* DASHBOARD_USER = "autoridad";
 const char* DASHBOARD_PASSWORD = "tomine";
+const char* MQTT_BROKER = "192.168.1.50"; // Reservar esta IP para la Raspberry Pi.
+const uint16_t MQTT_PORT = 1883;
+const char* MQTT_USERNAME = "iotnode";
+const char* MQTT_PASSWORD = "CAMBIAR_CLAVE_MQTT";
+const char* DEVICE_ID = "tomine-01";
+const char* MQTT_TELEMETRY_TOPIC = "sabana/borda/hidrico/sensores";
+const char* MQTT_STATUS_TOPIC = "sabana/borda/hidrico/status";
+const char* MQTT_ALARM_COMMAND_TOPIC = "sabana/borda/hidrico/command/alarm";
 
 // =========================================================================
 // CALIBRACIÓN DEL EMBALSE
@@ -47,6 +58,8 @@ DHT dht(DHT_PIN, DHT_TYPE);
 Adafruit_BMP280 bmp;
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 WebServer server(80);
+WiFiClient wifiClient;
+PubSubClient mqttClient(wifiClient);
 
 enum AlertState {
   NORMAL,
@@ -81,9 +94,66 @@ uint8_t currentDisplayPage = 0;
 const uint8_t MAX_PAGES = 4;
 bool previousPageButtonState = HIGH;
 uint32_t lastPageButtonToggle = 0;
+bool wifiWasConnected = false;
+uint32_t lastMqttReconnectAttempt = 0;
+uint32_t lastWifiReconnectAttempt = 0;
+uint32_t lastPublishedTimestamp = UINT32_MAX;
+uint32_t messageSequence = 0;
 
 SensorReadings getCurrentData();
 void updateDisplay(const SensorReadings& data);
+void setAlarmMuted(bool muted);
+const char* stateToText(AlertState state);
+
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  if (strcmp(topic, MQTT_ALARM_COMMAND_TOPIC) != 0 || length >= 80) return;
+  char command[80];
+  memcpy(command, payload, length);
+  command[length] = '\0';
+  char* value = strstr(command, "\"muted\"");
+  if (value == nullptr) return;
+  value = strchr(value, ':');
+  if (value == nullptr) return;
+  do { ++value; } while (*value == ' ' || *value == '\t');
+  if (strncmp(value, "true", 4) == 0) setAlarmMuted(true);
+  else if (strncmp(value, "false", 5) == 0) setAlarmMuted(false);
+}
+
+bool connectMqtt() {
+  if (mqttClient.connected()) return true;
+  String clientId = String("esp32-") + String((uint32_t)ESP.getEfuseMac(), HEX);
+  bool connected = mqttClient.connect(
+    clientId.c_str(), MQTT_USERNAME, MQTT_PASSWORD,
+    MQTT_STATUS_TOPIC, 1, true, "offline"
+  );
+  if (connected) {
+    mqttClient.publish(MQTT_STATUS_TOPIC, "online", true);
+    mqttClient.subscribe(MQTT_ALARM_COMMAND_TOPIC, 1);
+    Serial.println("MQTT conectado al Gateway");
+  } else {
+    Serial.printf("MQTT no conectado; estado=%d\n", mqttClient.state());
+  }
+  return connected;
+}
+
+void publishLatestReading() {
+  if (!mqttClient.connected()) return;
+  SensorReadings data = getCurrentData();
+  if (data.timestamp == 0 || data.timestamp == lastPublishedTimestamp) return;
+  char payload[480];
+  uint32_t sequence = ++messageSequence;
+  int length = snprintf(payload, sizeof(payload),
+    "{\"device_id\":\"%s\",\"message_id\":\"%s-%lu\",\"waterLevel\":%.1f,\"waterDistance\":%.1f,\"temperature\":%.1f,\"humidity\":%.1f,\"pressure\":%.1f,\"solarRadiation\":%.1f,\"evaporationRisk\":%.1f,\"state\":\"%s\",\"alarmMuted\":%s,\"timestamp\":%lu}",
+    DEVICE_ID, DEVICE_ID, (unsigned long)sequence,
+    data.waterLevel, data.waterDistance, data.temperature, data.humidity,
+    data.pressure, data.solarRadiation, data.evaporationRisk,
+    stateToText(data.state), data.alarmMuted ? "true" : "false",
+    (unsigned long)(data.timestamp / 1000));
+  if (length > 0 && length < (int)sizeof(payload) &&
+      mqttClient.publish(MQTT_TELEMETRY_TOPIC, payload, false)) {
+    lastPublishedTimestamp = data.timestamp;
+  }
+}
 
 float readWaterDistanceCm() {
   digitalWrite(ULTRASONIC_TRIG_PIN, LOW);
@@ -271,7 +341,7 @@ void updateDisplay(const SensorReadings& data) {
       display.println(data.alarmMuted ? "SILENCIADA" : "ACTIVA");
       display.println("");
       display.println("IP Red Local (AP):");
-      display.println(WiFi.softAPIP());
+      display.println(WiFi.localIP());
       display.println("");
       display.print("Distancia: ");
       display.print(data.waterDistance, 1);
@@ -499,18 +569,13 @@ void setup() {
     delay(2000);
   }
 
-  // Configuración de red en Modo Access Point (AP)
-  showMessage("Creando Wi-Fi", AP_SSID);
-  Serial.print("Configurando red Wi-Fi propia (Modo AP)...");
-  
-  WiFi.softAP(AP_SSID, AP_PASSWORD);
-  IPAddress myIP = WiFi.softAPIP();
-  
-  Serial.println("\nRed AP creada exitosamente.");
-  Serial.print("Nombre de la red (SSID): ");
-  Serial.println(AP_SSID);
-  Serial.print("IP del servidor Web: http://");
-  Serial.println(myIP);
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
+  mqttClient.setCallback(mqttCallback);
+  mqttClient.setBufferSize(512);
+  showMessage("Conectando Wi-Fi", "Iniciando tablero...");
 
   dataMutex = xSemaphoreCreateMutex();
   setupDashboardServer();
@@ -531,5 +596,30 @@ void setup() {
 void loop() {
   handlePageButton(); 
   server.handleClient();
+  uint32_t now = millis();
+  if (WiFi.status() != WL_CONNECTED) {
+    wifiWasConnected = false;
+    if (now - lastWifiReconnectAttempt >= 10000) {
+      lastWifiReconnectAttempt = now;
+      WiFi.disconnect();
+      WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    }
+  } else {
+    if (!wifiWasConnected) {
+      wifiWasConnected = true;
+      Serial.print("Tablero local: http://");
+      Serial.println(WiFi.localIP());
+      Serial.print("Gateway MQTT: ");
+      Serial.println(MQTT_BROKER);
+    }
+    if (!mqttClient.connected() && now - lastMqttReconnectAttempt >= 5000) {
+      lastMqttReconnectAttempt = now;
+      connectMqtt();
+    }
+    if (mqttClient.connected()) {
+      mqttClient.loop();
+      publishLatestReading();
+    }
+  }
   delay(5);
 }

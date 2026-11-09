@@ -1,0 +1,9 @@
+user iotnode
+topic write sabana/borda/hidrico/sensores
+topic write sabana/borda/hidrico/status
+topic read sabana/borda/hidrico/command/alarm
+
+user gateway
+topic read sabana/borda/hidrico/sensores
+topic read sabana/borda/hidrico/status
+topic write sabana/borda/hidrico/command/alarm
