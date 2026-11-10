@@ -49,6 +49,7 @@ UBIDOTS_TOKEN = os.getenv("UBIDOTS_TOKEN", "").strip()
 UBIDOTS_LABEL = os.getenv("UBIDOTS_DEVICE_LABEL", DEVICE_ID).strip()
 UBIDOTS_HOST = os.getenv("UBIDOTS_HOST", "industrial.api.ubidots.com")
 UBIDOTS_PORT = int(os.getenv("UBIDOTS_PORT", "8883"))
+UBIDOTS_MIN_INTERVAL_SECONDS = max(1, int(os.getenv("UBIDOTS_MIN_INTERVAL_SECONDS", "300")))
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
 
@@ -70,6 +71,8 @@ db_lock = threading.Lock()
 ai_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gateway-ai")
 last_ai_request: dict[str, float] = {}
 cloud_client: mqtt.Client | None = None
+cloud_last_publish: dict[str, float] = {}
+cloud_last_status: dict[str, tuple[str, int]] = {}
 
 
 def db_connect() -> sqlite3.Connection:
@@ -186,6 +189,13 @@ def save_reading(row: dict[str, Any]) -> bool:
 def publish_cloud(row: dict[str, Any]) -> None:
     if not UBIDOTS_TOKEN or cloud_client is None or not cloud_client.is_connected():
         return
+    now = time.monotonic()
+    device_id = row["device_id"]
+    current_status = (row["alert_state"], row["alarm_muted"])
+    status_changed = device_id in cloud_last_status and cloud_last_status[device_id] != current_status
+    last_publish = cloud_last_publish.get(device_id, 0.0)
+    if last_publish and now - last_publish < UBIDOTS_MIN_INTERVAL_SECONDS and not status_changed:
+        return
     body = {cloud_name: row[source_name] for source_name, cloud_name in UBIDOTS_FIELDS.items()}
     body["alert_state_code"] = {"NORMAL": 0, "ALERTA": 1, "CRITICO": 2}[row["alert_state"]]
     body["alarm_muted"] = row["alarm_muted"]
@@ -193,6 +203,9 @@ def publish_cloud(row: dict[str, Any]) -> None:
     result = cloud_client.publish(topic, json.dumps(body), qos=0, retain=False)
     if result.rc != mqtt.MQTT_ERR_SUCCESS:
         print(f"Ubidots: error al encolar publicación rc={result.rc}")
+    else:
+        cloud_last_publish[device_id] = now
+        cloud_last_status[device_id] = current_status
 
 
 def recent_readings(device_id: str, limit: int = 30) -> list[dict[str, Any]]:

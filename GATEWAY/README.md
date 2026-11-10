@@ -69,6 +69,8 @@ El ESP32 debe estar suscrito al tópico de comando y conectado a la WLAN del Gat
 
 El Gateway publica en `industrial.api.ubidots.com:8883` con TLS y usuario = token Ubidots, password vacío. Mapea los campos ya existentes del firmware a las etiquetas `water_level_pct`, `water_distance_cm`, `temperature_c`, `humidity_pct`, `pressure_hpa`, `solar_radiation_pct`, `evaporation_risk_pct`, `alert_state_code` y `alarm_muted` en el dispositivo definido por `UBIDOTS_DEVICE_LABEL`.
 
+El guardado local conserva todas las muestras (cada 2 s en el firmware). Para no sobrepasar la cuota diaria de Ubidots STEM, el reenvío normal a la nube se limita por defecto a un paquete cada 300 s (`UBIDOTS_MIN_INTERVAL_SECONDS=300`); cambios del estado de alerta o del silenciado se envían inmediatamente. Con nueve variables por paquete, el ritmo normal representa hasta 2,592 puntos/día, sin contar cambios de estado. Ajustar el intervalo solo después de confirmar el límite de la cuenta que se utilizará.
+
 ## 5. IA
 
 Con `GEMINI_API_KEY` configurada, las lecturas en `ALERTA` o `CRITICO` disparan, como máximo, una consulta por dispositivo cada cinco minutos. Se envían hasta 30 registros recientes y la respuesta se almacena en `ai_recommendations`. La recomendación es informativa, requiere revisión humana y no gobierna el buzzer ni sustituye las alertas locales. Sin clave o sin Internet, la adquisición y SQLite siguen activos.
