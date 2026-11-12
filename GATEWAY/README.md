@@ -1,6 +1,6 @@
 # Gateway IoT para Raspberry Pi
 
-La Raspberry Pi ejecuta Mosquitto, recibe la telemetría MQTT del ESP32, la guarda primero en SQLite y la reenvía a Ubidots por MQTT/TLS. El firmware del ESP32 conserva el servidor web local autenticado; no se publica directamente a un broker público.
+La Raspberry Pi ejecuta Mosquitto, recibe la telemetría MQTT del ESP32, la guarda primero en SQLite y la reenvía a ThingSpeak por HTTPS. El firmware del ESP32 conserva el servidor web local autenticado; no se publica directamente a un broker público.
 
 ## 1. Preparar Raspberry Pi OS
 
@@ -30,17 +30,27 @@ cd GATEWAY
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env
-nano .env
 ```
 
-En `.env`, configurar `MQTT_PASSWORD`, `UBIDOTS_TOKEN` y `GEMINI_API_KEY` si se habilitará IA generativa. El token Ubidots y la clave Gemini se quedan en la Raspberry Pi; nunca deben quedar en el firmware ni subirse a Git.
+Mantener un único archivo `.env` por instalación y colocarlo en esta carpeta de la Raspberry Pi. El `.env` contiene secretos y está excluido de Git, así que debe configurarse en la Pi aparte del código. Completar allí `MQTT_PASSWORD`, `THINGSPEAK_CHANNEL_ID`, `THINGSPEAK_WRITE_API_KEY` y `GEMINI_API_KEY`. No se usa `.env.example`.
+
+Variables adicionales para el análisis y tablero IA:
+
+```dotenv
+GEMINI_API_KEY=CLAVE_DE_AI_STUDIO
+GEMINI_MODEL=gemini-3-flash-preview
+AI_REPORT_INTERVAL_SECONDS=600
+AI_REPORT_WINDOW_SECONDS=600
+AI_REPORT_MIN_READINGS=3
+AI_DASHBOARD_HOST=0.0.0.0
+AI_DASHBOARD_PORT=8080
+```
 
 ```bash
 python gateway.py
 ```
 
-SQLite se crea en `data/gateway.sqlite3`. Cada lectura se inserta antes de intentar el reenvío a Ubidots. Si falta el token de Ubidots, el guardado local sigue funcionando y la publicación cloud queda omitida. QoS 1 del lado local puede reentregar mensajes; `device_id` + `message_id` deduplican el historial.
+SQLite se crea en `data/gateway.sqlite3`. Cada lectura se inserta antes de intentar el reenvío a ThingSpeak. Si no está configurada la Write API Key, el guardado local sigue funcionando y la publicación cloud queda omitida. QoS 1 del lado local puede reentregar mensajes; `device_id` + `message_id` deduplican el historial.
 
 ## 3. Probar el broker antes de tener hardware
 
@@ -65,14 +75,30 @@ python send_alarm_command.py unmute
 
 El ESP32 debe estar suscrito al tópico de comando y conectado a la WLAN del Gateway para recibirlo.
 
-## 4. Variables cloud Ubidots
+## 4. Variables cloud ThingSpeak
 
-El Gateway publica en `industrial.api.ubidots.com:8883` con TLS y usuario = token Ubidots, password vacío. Mapea los campos ya existentes del firmware a las etiquetas `water_level_pct`, `water_distance_cm`, `temperature_c`, `humidity_pct`, `pressure_hpa`, `solar_radiation_pct`, `evaporation_risk_pct`, `alert_state_code` y `alarm_muted` en el dispositivo definido por `UBIDOTS_DEVICE_LABEL`.
+El Gateway publica por HTTPS en `api.thingspeak.com` usando `THINGSPEAK_WRITE_API_KEY`. Mapea los siete valores numéricos del firmware a ThingSpeak Field 1–7: nivel de agua (%), distancia a la superficie (cm), temperatura (°C), humedad relativa (%), presión (hPa), lectura LDR normalizada (%) y riesgo estimado de evaporación (%). `THINGSPEAK_CHANNEL_ID` identifica el canal y se usa para lecturas privadas desde ThingSpeak; la publicación usa la Write API Key.
 
-El guardado local conserva todas las muestras (cada 2 s en el firmware). Para no sobrepasar la cuota diaria de Ubidots STEM, el reenvío normal a la nube se limita por defecto a un paquete cada 300 s (`UBIDOTS_MIN_INTERVAL_SECONDS=300`); cambios del estado de alerta o del silenciado se envían inmediatamente. Con nueve variables por paquete, el ritmo normal representa hasta 2,592 puntos/día, sin contar cambios de estado. Ajustar el intervalo solo después de confirmar el límite de la cuenta que se utilizará.
+El guardado local conserva todas las muestras (cada 2 s en el firmware). Para cumplir el intervalo mínimo de publicación de ThingSpeak, el reenvío se limita por defecto a un paquete cada 300 s (`THINGSPEAK_MIN_INTERVAL_SECONDS=300`). ThingSpeak aplica un intervalo mínimo entre actualizaciones; mantén al menos 15 s y confirma los límites de tu cuenta antes de reducirlo.
 
-## 5. IA
+## 5. Reportes periódicos con Gemini y tablero local
 
-Con `GEMINI_API_KEY` configurada, las lecturas en `ALERTA` o `CRITICO` disparan, como máximo, una consulta por dispositivo cada cinco minutos. Se envían hasta 30 registros recientes y la respuesta se almacena en `ai_recommendations`. La recomendación es informativa, requiere revisión humana y no gobierna el buzzer ni sustituye las alertas locales. Sin clave o sin Internet, la adquisición y SQLite siguen activos.
+El proceso `ai_dashboard.py` es independiente del receptor MQTT. Cada 10 minutos consulta en SQLite las lecturas recibidas durante la ventana de análisis, calcula estadísticas verificables y pide a Gemini un reporte en español. Por defecto requiere al menos tres lecturas por dispositivo. Gemini recibe estadísticas y una muestra distribuida de hasta 12 lecturas, no toda la base de datos. El reporte queda guardado en la tabla `ai_reports`. La llamada usa la API `generateContent` con `responseJsonSchema`; si el modelo devuelve texto libre, el tablero lo muestra como comentario y marca la tendencia como no determinada. Consulta la [documentación oficial de Gemini](https://ai.google.dev/gemini-api/docs/structured-output) para el formato de respuesta.
 
-Para la Wiki: documentar proveedor/modelo, prompts exactos, datos usados, verificación con casos conocidos y cómo se aplicó la sugerencia. La API Gemini debe revisarse/validarse según disponibilidad de cuenta y límites actuales.
+La base de datos y el tablero se quedan en la Raspberry Pi, pero las estadísticas y la muestra de lecturas de cada ventana se envían a la API de Gemini para generar el reporte. No se envían credenciales MQTT ni la clave de Gemini como parte de los datos.
+
+Iniciar el servicio en otra terminal, manteniendo `gateway.py` activo:
+
+```bash
+cd GATEWAY
+. .venv/bin/activate
+python ai_dashboard.py
+```
+
+Abrir `http://IP_DE_LA_RASPBERRY:8080/` desde un equipo conectado a la WLAN local. Esta página muestra únicamente los reportes de Gemini y su estado; no ofrece controles para alarmas ni cambia las reglas del ESP32. `/healthz` permite revisar que el servidor responde. Para limitarlo a la propia Raspberry Pi, configurar `AI_DASHBOARD_HOST=127.0.0.1`; con `0.0.0.0` escucha en las interfaces de red de la Pi, por lo que debe mantenerse dentro de una WLAN confiable y no exponerse mediante redirección de puertos a Internet.
+
+Al iniciar `ai_dashboard.py` se intenta generar un primer reporte de inmediato con las lecturas disponibles en la ventana reciente; después se repite cada intervalo. Si no hay lecturas se muestra un estado `no_data`; si hay menos del mínimo se guarda `insufficient_data`. En ambos casos vuelve a intentarlo en el siguiente ciclo. Usa `gemini-3-flash-preview`; ante HTTP 503 o timeout reintenta hasta dos veces con pausas crecientes y timeout de 60 segundos. El parser acepta JSON directo, cercado en Markdown o rodeado por texto breve. Si el servicio sigue indisponible o entrega una respuesta inválida, registra el error y el Gateway de telemetría continúa operando. Sin `GEMINI_API_KEY` no se envía telemetría al proveedor y el tablero informa que falta la configuración. Al arrancar, el proceso imprime la ruta SQLite y si detectó la variable de clave, pero nunca imprime su valor.
+
+La respuesta incluye resumen, tendencia observada, observaciones, sugerencia para revisión humana e incertidumbre. No predice el nivel futuro, no calcula evaporación en mm/día y no activa ni silencia alarmas. Las alertas físicas continúan bajo las reglas locales del ESP32.
+
+Para la Wiki: documentar modelo, prompt, ventana y estadísticas, fuente de datos, casos de referencia, resultados, latencia y cómo se revisaron las sugerencias generadas.

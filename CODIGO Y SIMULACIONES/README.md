@@ -151,13 +151,15 @@ Responde al tablero local.
 Permite desactivar o reactivar la alarma desde la web y desde el pulsador fisico.
 ```
 
-El ESP32 conserva el tablero HTTP local autenticado y publica las lecturas mediante MQTT a Mosquitto en la Raspberry Pi. La Pi almacena primero en SQLite y retransmite a Ubidots por MQTT/TLS. El ESP32 tambien recibe por MQTT el comando local para silenciar/reactivar el buzzer.
+El ESP32 conserva su tablero HTTP local autenticado y publica las lecturas mediante MQTT a Mosquitto en la Raspberry Pi. La Pi almacena primero en SQLite y puede reenviar valores a ThingSpeak por HTTPS. Un proceso separado, `GATEWAY/ai_dashboard.py`, consulta el histórico local, genera reportes con Gemini cada 10 minutos y sirve un tablero local de solo lectura dedicado a esos reportes. El ESP32 también recibe por MQTT el comando local para silenciar/reactivar el buzzer.
 
 ### Configuracion de Challenge 3
 
 En `src/main.cpp`, reemplazar `WIFI_SSID`, `WIFI_PASSWORD`, `MQTT_BROKER` y `MQTT_PASSWORD` por la WLAN autorizada, la IP reservada de la Raspberry Pi y la clave MQTT asignada al usuario `iotnode`. Los tópicos y nombres de campos se configuran en las constantes del mismo archivo.
 
 La Raspberry Pi y los pasos de instalación están documentados en la carpeta `../GATEWAY`. No usar el broker público HiveMQ para la entrega: el nodo debe publicar en el broker local Mosquitto. El cliente PubSubClient publica telemetría en QoS 0; si se necesita garantizar entrega, hay que añadir cola/reintento persistente en el firmware o cambiar a un cliente con publicación QoS 1. La Pi deduplica reentregas recibidas por el broker mediante `device_id` y `message_id`.
+
+Para iniciar el tablero y generador de reportes de IA en la Raspberry Pi, configura `GEMINI_API_KEY` en `GATEWAY/.env`, mantén activo `gateway.py` y ejecuta `python ai_dashboard.py` en otro proceso. Consulta `../GATEWAY/README.md` para el puerto, variables de configuración y límites del análisis.
 
 ## Uso
 

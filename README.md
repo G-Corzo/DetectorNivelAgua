@@ -1,12 +1,20 @@
-# DetectorNivelAgua
+# Detector de nivel de agua
 
-## Que es?
-  Este es un proyecto para la deteccion de las variables de un cuerpo de agua y sus variables de entorno locales, ejecutado como parte de un desarrollo de un proyecto de sostenibilidad, teniendo en cuenta la simplicidad y costo financiero del diseño sin sacrificar funcionalidad operativa.
+Prototipo IoT de monitoreo de nivel de agua y condiciones ambientales, diseñado como una estación local de bajo costo. El ESP32 mide nivel, temperatura, humedad, presión y luz; calcula un índice estimado de evaporación y mantiene las alertas físicas y el tablero local del dispositivo.
 
-## Por que?
-  Se desarrollo como respuesta a un proyecto de monitoreo de reservas de aguas para evitar desasters de sequia y sobrebordamiento por parte del fenomeno de El Niño que recientemente se ha estado propagando en niveles aumentados por todo el planeta.
+## Arquitectura actual
 
-## Como funciona?
-  Funciona mediante una unidad de microcontrolador ESP32 central, junto a varios sensores conectados para medir las variables relevantes; temperatura, humedad, luz solar, nivel de agua, entre otras.
-  Para la codificacion de la unidad ESP32 y asamblaje de la unidad, consulta la carpeta "[CODIGO Y SIMULACIONES](https://github.com/G-Corzo/DetectorNivelAgua/tree/main/CODIGO%20Y%20SIMULACIONES)"
-  Para realizar cambios al dispositivo, consulta la carpeta "[DOCUMENTACION](https://github.com/G-Corzo/DetectorNivelAgua/tree/main/DOCUMENTACION)"
+```text
+Sensores -> ESP32 -> MQTT local -> Raspberry Pi / Mosquitto -> SQLite
+                                                   ├-> ThingSpeak por HTTPS (opcional)
+                                                   └-> Gemini cada 10 min -> tablero local de reportes IA
+```
+
+Gemini analiza la ventana reciente de datos guardados en SQLite y genera un reporte informativo. No decide el estado de alerta ni controla el buzzer. El índice de evaporación es una estimación normalizada, no una medición física en mm/día.
+
+## Código y documentación
+
+- [Firmware y simulación](CODIGO%20Y%20SIMULACIONES/README.md)
+- [Gateway Raspberry Pi, instalación y tablero de IA](GATEWAY/README.md)
+- [Documentación técnica y análisis del Challenge 2](DOCUMENTACION/README.md)
+- [Análisis de requisitos del Challenge 2](DOCUMENTACION/Analisis_Challenge2.md)

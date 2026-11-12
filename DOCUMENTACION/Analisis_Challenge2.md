@@ -34,12 +34,22 @@ El Challenge 2 conserva el objetivo de monitorear disponibilidad y escasez de ag
 | Desactivar alarma desde tablero | Cumplido en firmware simulado | Botones web para silenciar/reactivar. |
 | Acceso restringido | Parcialmente cumplido | Autenticacion basica HTTP. Falta validacion en red fisica. |
 | WLAN local | Parcialmente cumplido | En Wokwi se usa Wokwi-GUEST. En fisico debe configurarse red local. |
-| No MQTT | Cumplido | Se usa HTTP local, no MQTT. |
+| No MQTT (requisito de Challenge 2) | No cumplido en la arquitectura escalada actual | El firmware ahora publica telemetría por MQTT local al Gateway Raspberry Pi. Esta decisión de arquitectura se conserva para la versión actual y debe distinguirse de la versión que se evalúe contra Challenge 2. |
 | Medicion fuera del hilo principal | Cumplido | Tarea FreeRTOS `sensor-task`; `loop()` atiende servidor. |
 | Prototipo listo para instalar | Pendiente fisico | Falta carcasa, alimentacion y montaje integrado. |
 | Banco de pruebas | Pendiente documentacion/ejecucion | Falta tabla de pruebas, calibracion y resultados. |
 | Video demostrativo | Pendiente | Debe mostrar extremo a extremo. |
 | Wiki completa | Pendiente | Falta integrar secciones y evidencias finales. |
+
+## Actualización de arquitectura: reportes periódicos con IA
+
+La versión escalada conserva ESP32, Mosquitto y Raspberry Pi. El ESP32 continúa midiendo y controlando las alertas localmente; el Gateway guarda la telemetría en SQLite. Un proceso independiente, `GATEWAY/ai_dashboard.py`, consulta la base cada 10 minutos, calcula métricas de la ventana reciente, envía métricas y una muestra de hasta 12 lecturas a Gemini y guarda el reporte en la tabla `ai_reports`.
+
+El tablero de reportes se sirve desde la Raspberry Pi por HTTP en el puerto 8080 y muestra únicamente análisis de Gemini y estados de generación. No ofrece controles de actuadores ni reemplaza el tablero del ESP32. La API key vive en `GATEWAY/.env`; la base de datos y la interfaz permanecen locales, mientras que las métricas y lecturas de muestra se transmiten a la API externa de Gemini.
+
+El análisis describe tendencias observadas y entrega una sugerencia para revisión humana. No predice el nivel futuro ni calcula evaporación física en mm/día. Si faltan lecturas, conexión o una respuesta válida, se registra el estado del reporte y el Gateway de telemetría continúa operando.
+
+**Validación pendiente:** probar el proceso en la Raspberry Pi con una clave válida, confirmar acceso desde la WLAN prevista y registrar resultados de escenarios conocidos. Esta ampliación no cambia el estado de cumplimiento del requisito original de Challenge 2 que prohíbe MQTT.
 
 ## Que toca modificar o completar
 
@@ -106,7 +116,7 @@ Agregar o completar:
 - Resultados y analisis.
 - Autoevaluacion del protocolo de pruebas.
 - Mejoras respecto al Challenge 1.
-- Uso de IA.
+- Integrar en la Wiki la descripción y evidencia del uso de IA documentado en `GATEWAY/README.md`.
 - Roles y contribuciones.
 - Anexos con codigo y simulacion.
 
