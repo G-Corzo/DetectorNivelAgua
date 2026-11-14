@@ -6,6 +6,7 @@
 #include <WebServer.h>
 #include <WiFi.h>
 #include <Wire.h>
+#include "secrets.h"
 #include <PubSubClient.h>
 #include <stdio.h>
 #include <string.h>
@@ -30,15 +31,7 @@
 #define SCREEN_HEIGHT 64
 #define OLED_RESET -1
 
-// Credenciales de la WLAN compartida con la Raspberry Pi.
-const char* WIFI_SSID = "CAMBIAR_POR_SSID_WLAN";
-const char* WIFI_PASSWORD = "CAMBIAR_POR_CLAVE_WLAN";
-const char* DASHBOARD_USER = "autoridad";
-const char* DASHBOARD_PASSWORD = "tomine";
-const char* MQTT_BROKER = "192.168.1.50"; // Reservar esta IP para la Raspberry Pi.
 const uint16_t MQTT_PORT = 1883;
-const char* MQTT_USERNAME = "iotnode";
-const char* MQTT_PASSWORD = "CAMBIAR_CLAVE_MQTT";
 const char* DEVICE_ID = "tomine-01";
 const char* MQTT_TELEMETRY_TOPIC = "sabana/borda/hidrico/sensores";
 const char* MQTT_STATUS_TOPIC = "sabana/borda/hidrico/status";

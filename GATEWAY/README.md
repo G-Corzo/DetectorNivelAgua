@@ -30,21 +30,16 @@ cd GATEWAY
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env
+nano .env
+chmod 600 .env
 ```
 
-Mantener un único archivo `.env` por instalación y colocarlo en esta carpeta de la Raspberry Pi. El `.env` contiene secretos y está excluido de Git, así que debe configurarse en la Pi aparte del código. Completar allí `MQTT_PASSWORD`, `THINGSPEAK_CHANNEL_ID`, `THINGSPEAK_WRITE_API_KEY` y `GEMINI_API_KEY`. No se usa `.env.example`.
+Completa `.env` con las credenciales locales del broker, la Write API Key de ThingSpeak si se usa y `GEMINI_API_KEY`. El `.env` real está excluido de Git y debe permanecer privado. El archivo `.env.example` sí se comparte con el equipo, pero solo contiene nombres de variables y valores vacíos o marcadores.
 
 Variables adicionales para el análisis y tablero IA:
 
-```dotenv
-GEMINI_API_KEY=CLAVE_DE_AI_STUDIO
-GEMINI_MODEL=gemini-3-flash-preview
-AI_REPORT_INTERVAL_SECONDS=600
-AI_REPORT_WINDOW_SECONDS=600
-AI_REPORT_MIN_READINGS=3
-AI_DASHBOARD_HOST=0.0.0.0
-AI_DASHBOARD_PORT=8080
-```
+Los valores predeterminados de IA ya están en `.env.example`: modelo `gemini-3-flash-preview`, ventana e intervalo de 600 segundos, mínimo de tres lecturas y tablero en el puerto 8080.
 
 ```bash
 python gateway.py

@@ -155,7 +155,7 @@ El ESP32 conserva su tablero HTTP local autenticado y publica las lecturas media
 
 ### Configuracion de Challenge 3
 
-En `src/main.cpp`, reemplazar `WIFI_SSID`, `WIFI_PASSWORD`, `MQTT_BROKER` y `MQTT_PASSWORD` por la WLAN autorizada, la IP reservada de la Raspberry Pi y la clave MQTT asignada al usuario `iotnode`. Los tópicos y nombres de campos se configuran en las constantes del mismo archivo.
+Antes de compilar, copia `src/secrets.h.example` a `src/secrets.h` y completa allí la WLAN autorizada, las credenciales del tablero, la IP reservada de la Raspberry Pi y la clave MQTT asignada a `iotnode`. `src/secrets.h` está excluido de Git: cada integrante debe crear su propia copia local. Las credenciales ya no están escritas en `src/main.cpp`.
 
 La Raspberry Pi y los pasos de instalación están documentados en la carpeta `../GATEWAY`. No usar el broker público HiveMQ para la entrega: el nodo debe publicar en el broker local Mosquitto. El cliente PubSubClient publica telemetría en QoS 0; si se necesita garantizar entrega, hay que añadir cola/reintento persistente en el firmware o cambiar a un cliente con publicación QoS 1. La Pi deduplica reentregas recibidas por el broker mediante `device_id` y `message_id`.
 
