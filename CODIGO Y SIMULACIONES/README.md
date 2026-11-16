@@ -1,178 +1,92 @@
-# Simulacion IoT - Detector de Nivel de Agua
+# Firmware ESP32 y simulación Wokwi
 
-Esta carpeta contiene la simulacion en Wokwi y PlatformIO del prototipo IoT para monitoreo de nivel de agua y condiciones ambientales.
+Esta carpeta es el proyecto PlatformIO del nodo IoT. El circuito se describe en `diagram.json`; el firmware se encuentra en `src/main.cpp`; PlatformIO usa `platformio.ini`; y `wokwi.toml` indica a la extensión Wokwi qué binario usar.
 
-La version ajustada para el Challenge 2 incluye tablero de control local alojado en el ESP32, historico reciente, autenticacion basica, alarma fisica y lectura de sensores en una tarea FreeRTOS separada del hilo principal.
-
-## Componentes
-
-- ESP32 DevKit C V4
-- Sensor ultrasonico HC-SR04
-- Sensor DHT22
-- Sensor BMP280
-- Sensor LDR
-- Pantalla integrada del ESP32, simulada como OLED SSD1306 I2C
-- LED verde
-- LED amarillo
-- LED rojo
-- Buzzer
-- Pulsador para silenciar/reactivar alarma
-- Cables de conexion
-
-## Red local y tablero
-
-En la simulacion se usa la red de Wokwi:
+## Arquitectura del nodo
 
 ```text
-SSID: Wokwi-GUEST
-Password: vacio
+HC-SR04 + DHT22 + BMP280 + LDR
+                 ↓
+         ESP32 / sensorTask
+                 ├── nivel y riesgo estimado
+                 ├── estado local + LEDs + buzzer
+                 ├── OLED + historial local de 30 muestras
+                 ├── tablero HTTP autenticado + /api/status
+                 └── MQTT hacia el gateway (arquitectura ampliada)
 ```
 
-En el montaje real, estos valores deben reemplazarse por la WLAN entregada por la autoridad local o por una red local configurada para el prototipo.
+El estado de alerta y las salidas físicas se calculan localmente. MQTT es una ampliación para enviar telemetría al gateway Raspberry Pi; no es necesario para las alertas locales. La publicación del firmware usa PubSubClient en QoS 0.
 
-El tablero se aloja directamente en el ESP32 mediante un servidor web embebido. Cuando la simulacion inicia, el monitor serial muestra una URL similar a:
+## Componentes y conexiones
 
-```text
-Tablero local: http://192.168.x.x
-```
+| Componente | Señal | GPIO ESP32 |
+|---|---|---:|
+| DHT22 | DATA | 15 |
+| HC-SR04 | TRIG | 5 |
+| HC-SR04 | ECHO | 18 |
+| BMP280 y OLED SSD1306 | SDA | 21 |
+| BMP280 y OLED SSD1306 | SCL | 22 |
+| LDR | AO | 35 |
+| LED verde | Ánodo | 25 |
+| LED amarillo | Ánodo | 26 |
+| LED rojo | Ánodo | 27 |
+| Buzzer | Positivo | 14 |
+| Botón de página/silencio | Señal | 33 |
 
-Credenciales del tablero:
+Las conexiones completas se encuentran en `diagram.json`. En el montaje físico, el HC-SR04 normalmente entrega 5 V en ECHO; usa divisor de tensión o adaptador de nivel para proteger la entrada de 3,3 V del ESP32.
 
-```text
-Usuario: autoridad
-Clave: tomine
-```
+## Lectura y clasificación
 
-El tablero permite:
+- El nodo intenta leer sensores cada 2 segundos (`SAMPLE_PERIOD_MS`).
+- El HC-SR04 mide distancia entre el sensor y la superficie. La calibración de firmware usa `TANK_DEPTH_CM = 138.5` cm y calcula `nivel = (profundidad − distancia) / profundidad × 100`.
+- La conversión del LDR a porcentaje es una normalización del ADC, no una medición calibrada de irradiancia solar.
+- El riesgo normalizado combina temperatura (35 %), aire seco (30 %), radiación aproximada (25 %) y baja presión (10 %). El nombre de la variable no significa evaporación medida en mm/día.
+- NORMAL requiere nivel ≥55 % y riesgo <55 %. ALERTA se activa cuando el nivel es menor a 55 % o el riesgo ≥55 %. CRITICO requiere simultáneamente nivel <30 % y riesgo ≥70 %.
+- NORMAL usa LED verde y buzzer apagado; ALERTA usa LED amarillo y sonido intermitente; CRITICO usa LED rojo y sonido continuo. El silencio desactiva el buzzer, pero conserva la clasificación de riesgo.
 
-- Ver valores actuales de nivel, distancia, temperatura, humedad, presion, radiacion y riesgo de evaporacion.
-- Ver historico reciente de mediciones.
-- Consultar estado NORMAL, ALERTA o CRITICO.
-- Desactivar y reactivar la alarma fisica.
+La lectura se implementa en `readSensors`; las conversiones en `calculateWaterLevelPercent` y `calculateEvaporationRisk`; la decisión en `evaluateState`; y la salida en `applyAlertState`. `sensorTask` ejecuta el ciclo de medición separado del `loop()` que atiende HTTP y MQTT.
 
-El pulsador fisico conectado en GPIO 33 hace lo mismo que el tablero para la alarma:
+## Tablero local del ESP32
 
-- Si la alarma esta activa, la silencia.
-- Si la alarma esta silenciada, la reactiva.
-- No borra el estado de riesgo; solo apaga o habilita el buzzer fisico.
+El servidor web corre en el propio microcontrolador, por HTTP en el puerto 80:
 
-Tambien existe una salida JSON para pruebas:
+- `/`: tablero de lecturas actuales e historial reciente.
+- `/api/status`: estado actual en JSON.
+- `/alarm/off` y `/alarm/on`: rutas POST para silenciar/reactivar el buzzer, si el usuario pasó autenticación.
 
-```text
-/api/status
-```
+Las funciones principales son `setupDashboardServer`, `handleDashboard`, `handleStatusApi`, `handleAlarmOff` y `handleAlarmOn`. Las credenciales las toma de `src/secrets.h`; no son las mismas que las del tablero de reportes IA del gateway. La autenticación HTTP básica no cifra el tráfico, por eso se debe limitar a una WLAN de confianza.
 
-## Pines
+Al conectar a Wi-Fi, el monitor serial imprime la dirección IP del ESP32. El tablero se abre en `http://<IP-del-ESP32>/` desde un equipo con acceso a esa red. La salida JSON puede consultarse en `http://<IP-del-ESP32>/api/status`.
 
-| Componente | Pin del componente | Pin ESP32 |
-|---|---:|---:|
-| DHT22 | DATA | GPIO 15 |
-| HC-SR04 | TRIG | GPIO 5 |
-| HC-SR04 | ECHO | GPIO 18 |
-| BMP280 | SDA | GPIO 21 |
-| BMP280 | SCL | GPIO 22 |
-| LDR | AO | GPIO 35 |
-| OLED integrada | SDA | GPIO 21 |
-| OLED integrada | SCL | GPIO 22 |
-| LED verde | Anodo | GPIO 25 |
-| LED amarillo | Anodo | GPIO 26 |
-| LED rojo | Anodo | GPIO 27 |
-| Buzzer | Positivo | GPIO 14 |
-| Pulsador alarma | Senal | GPIO 33 |
+## Publicación y comandos MQTT
 
-## Logica de nivel
+El firmware se conecta al broker de `MQTT_BROKER`, usando puerto 1883. Publica en `sabana/borda/hidrico/sensores` mensajes JSON con `device_id`, `message_id`, nivel, distancia, temperatura, humedad, presión, radiación, riesgo, estado, `alarmMuted` y timestamp.
 
-El HC-SR04 se ubica en la parte superior del tanque o reservorio y mide la distancia hasta la superficie del agua.
+- `connectMqtt`: conecta y establece estado de presencia; se suscribe al tópico de comando.
+- `publishLatestReading`: publica los valores nuevos.
+- `mqttCallback`: procesa `{"muted":true}` o `{"muted":false}`.
 
-- Distancia pequena: el agua esta cerca del sensor y el nivel es alto.
-- Distancia grande: el agua esta lejos del sensor y el nivel es bajo.
+El cliente actual no persiste una cola local; si se pierde conectividad, no se garantiza la entrega de las muestras mientras está desconectado. El gateway deduplica mensajes recibidos con el mismo dispositivo e identificador.
 
-Para la simulacion se usa una profundidad de tanque de 100 cm:
+## Configuración privada
 
-```text
-Nivel de agua (%) = ((100 cm - distancia medida) / 100 cm) * 100
-```
+1. Copia `src/secrets.h.example` a `src/secrets.h`.
+2. Configura SSID/clave WLAN, usuario/clave del tablero, host/IP del broker y usuario/clave MQTT del ESP32.
+3. Mantén `secrets.h` fuera de Git. El `.gitignore` de esta carpeta ya lo excluye.
 
-## Condiciones de alerta
+La plantilla deja marcadores. El ejemplo de broker `192.168.1.50` es ilustrativo y debe cambiarse por la dirección real de la Raspberry Pi. El SSID `Wokwi-GUEST` puede usarse para conectividad simulada a Internet en Wokwi; no da acceso automáticamente a un broker que esté en una IP privada de la red local.
 
-La simulacion aplica una logica de fusion de senales basada en el estudio del embalse. El sistema no solo evalua si el nivel esta bajo, sino tambien si las condiciones ambientales favorecen evaporacion.
+## Compilar y abrir la simulación
 
-El riesgo de evaporacion se calcula con:
+1. Abre esta carpeta en VS Code.
+2. Completa `src/secrets.h` localmente.
+3. Compila el entorno `esp32dev` desde PlatformIO.
+4. Ejecuta `Wokwi: Start Simulator`.
+5. Cambia distancia, temperatura, humedad y luz en los controles de los componentes para observar cómo reaccionan el cálculo y los estados.
+6. Consulta monitor serial y, si la red simulada lo permite, abre el tablero HTTP en la IP que informa el ESP32.
 
-- Temperatura.
-- Humedad relativa.
-- Radiacion solar aproximada con LDR.
-- Presion atmosferica medida por BMP280.
+Wokwi ejecuta la simulación en infraestructura externa; la comunicación desde Wokwi hasta un broker privado de Raspberry Pi requiere una ruta de red compatible. Para más información de Mosquitto, almacenamiento, ThingSpeak y reportes IA, consulta [`../GATEWAY/README.md`](../GATEWAY/README.md) y [`../DOCUMENTACION/Arquitectura_y_Despliegue.md`](../DOCUMENTACION/Arquitectura_y_Despliegue.md).
 
-Estado NORMAL:
+## Configuración para Challenge 3
 
-- Nivel de agua mayor o igual al 55%.
-- Riesgo de evaporacion menor al 55%.
-- LED verde encendido.
-- Buzzer apagado.
-
-Estado ALERTA:
-
-- Nivel de agua entre 30% y 55%.
-- O nivel de agua menor al 30%.
-- O riesgo de evaporacion mayor o igual al 55%.
-- LED amarillo encendido.
-- Buzzer intermitente.
-
-Estado CRITICO:
-
-- Nivel de agua menor al 30%.
-- Riesgo de evaporacion mayor o igual al 70%.
-- LED rojo encendido.
-- Buzzer continuo.
-
-Formula usada para el riesgo de evaporacion:
-
-```text
-Riesgo evaporacion = temperatura normalizada * 0.35
-                   + aire seco * 0.30
-                   + radiacion solar * 0.25
-                   + baja presion atmosferica * 0.10
-```
-
-## Arquitectura de software
-
-Para cumplir el requisito de que la medicion no se ejecute en el hilo principal, el firmware usa dos flujos:
-
-```text
-Tarea sensor-task:
-Lee sensores cada 2 segundos.
-Calcula nivel, riesgo de evaporacion y estado.
-Actualiza LEDs, buzzer, pantalla OLED e historico.
-
-Loop principal:
-Atiende el servidor web embebido.
-Responde al tablero local.
-Permite desactivar o reactivar la alarma desde la web y desde el pulsador fisico.
-```
-
-El ESP32 conserva su tablero HTTP local autenticado y publica las lecturas mediante MQTT a Mosquitto en la Raspberry Pi. La Pi almacena primero en SQLite y puede reenviar valores a ThingSpeak por HTTPS. Un proceso separado, `GATEWAY/ai_dashboard.py`, consulta el histórico local, genera reportes con Gemini cada 10 minutos y sirve un tablero local de solo lectura dedicado a esos reportes. El ESP32 también recibe por MQTT el comando local para silenciar/reactivar el buzzer.
-
-### Configuracion de Challenge 3
-
-Antes de compilar, copia `src/secrets.h.example` a `src/secrets.h` y completa allí la WLAN autorizada, las credenciales del tablero, la IP reservada de la Raspberry Pi y la clave MQTT asignada a `iotnode`. `src/secrets.h` está excluido de Git: cada integrante debe crear su propia copia local. Las credenciales ya no están escritas en `src/main.cpp`.
-
-La Raspberry Pi y los pasos de instalación están documentados en la carpeta `../GATEWAY`. No usar el broker público HiveMQ para la entrega: el nodo debe publicar en el broker local Mosquitto. El cliente PubSubClient publica telemetría en QoS 0; si se necesita garantizar entrega, hay que añadir cola/reintento persistente en el firmware o cambiar a un cliente con publicación QoS 1. La Pi deduplica reentregas recibidas por el broker mediante `device_id` y `message_id`.
-
-Para iniciar el tablero y generador de reportes de IA en la Raspberry Pi, configura `GEMINI_API_KEY` en `GATEWAY/.env`, mantén activo `gateway.py` y ejecuta `python ai_dashboard.py` en otro proceso. Consulta `../GATEWAY/README.md` para el puerto, variables de configuración y límites del análisis.
-
-## Uso
-
-1. Abrir esta carpeta en VS Code.
-2. Compilar con PlatformIO.
-3. Ejecutar `Wokwi: Start Simulator`.
-4. Cambiar la distancia del HC-SR04 para simular el nivel del agua.
-5. Cambiar temperatura y humedad en el DHT22 para probar condiciones secas o calidas.
-6. Cambiar la luz del LDR para simular mayor o menor radiacion solar.
-7. Observar la pantalla integrada/OLED: muestra nivel, distancia, temperatura, humedad, radiacion, presion, riesgo e IP local.
-8. Abrir el monitor serial, copiar la URL del tablero local y acceder con las credenciales.
-9. Presionar el boton MUTE para silenciar o reactivar el buzzer sin apagar la medicion.
-
-## Nota para montaje fisico
-
-El HC-SR04 trabaja normalmente a 5V, mientras que el ESP32 usa entradas de 3.3V. En el montaje fisico, el pin ECHO debe conectarse al ESP32 mediante divisor de voltaje o adaptador de nivel logico.
+El enunciado completo del Challenge 3 no se encuentra en este repositorio. Esta sección describe cómo aprovisionar esta versión del firmware para el gateway ampliado; no sustituye una matriz de requisitos del reto. El archivo `src/secrets.h.example` muestra las variables locales necesarias. El broker esperado es Mosquitto local, no un broker MQTT público.

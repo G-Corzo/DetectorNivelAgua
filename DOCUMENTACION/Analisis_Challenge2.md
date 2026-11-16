@@ -28,7 +28,7 @@ El Challenge 2 conserva el objetivo de monitorear disponibilidad y escasez de ag
 | Variables meteorologicas | Cumplido en simulacion | DHT22, BMP280 y LDR. |
 | Logica de fusion | Cumplido en simulacion | Nivel + riesgo de evaporacion. |
 | Alerta fisica | Cumplido en simulacion | LEDs y buzzer. |
-| Visualizacion en dispositivo IoT | Cumplido en simulacion | LCD 16x2. |
+| Visualizacion en dispositivo IoT | Cumplido en simulacion | Pantalla OLED SSD1306 128x64 descrita en `diagram.json` y `src/main.cpp`; no es una LCD 16x2. |
 | Tablero de control local | Cumplido en firmware simulado | Servidor HTTP en ESP32. |
 | Historico reciente | Cumplido en firmware simulado | Arreglo circular de 30 muestras. |
 | Desactivar alarma desde tablero | Cumplido en firmware simulado | Botones web para silenciar/reactivar. |
@@ -50,6 +50,12 @@ El tablero de reportes se sirve desde la Raspberry Pi por HTTP en el puerto 8080
 El análisis describe tendencias observadas y entrega una sugerencia para revisión humana. No predice el nivel futuro ni calcula evaporación física en mm/día. Si faltan lecturas, conexión o una respuesta válida, se registra el estado del reporte y el Gateway de telemetría continúa operando.
 
 **Validación pendiente:** probar el proceso en la Raspberry Pi con una clave válida, confirmar acceso desde la WLAN prevista y registrar resultados de escenarios conocidos. Esta ampliación no cambia el estado de cumplimiento del requisito original de Challenge 2 que prohíbe MQTT.
+
+## Aclaración de alcance y evidencia
+
+Esta matriz corresponde al análisis de Challenge 2 conservado en el repositorio. La arquitectura ampliada con Raspberry Pi, Mosquitto, SQLite, ThingSpeak y reportes Gemini se documenta por separado y no convierte en cumplido el requisito de Challenge 2 que prohíbe MQTT. La interfaz y sensores listados como cumplidos en simulación describen el diseño/código de Wokwi, no evidencia de un montaje físico ni de pruebas en una red real.
+
+El enunciado completo de Challenge 3 no está incluido en esta copia del repositorio. La mención a Challenge 3 en el README del firmware describe aprovisionamiento para la arquitectura ampliada; no sirve para determinar cumplimiento del reto sin su documento fuente.
 
 ## Que toca modificar o completar
 

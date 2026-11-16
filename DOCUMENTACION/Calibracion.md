@@ -42,3 +42,9 @@ error promedio de 0,8cm. Este valor se le suma de ahora en adelante a todas las 
 Para los sensores de temperatura, presión y humedad. El dispositivo fue expuesta al clima ambiente de madrid cundinamarca y por medio del reporte meteorologico
 calculamos el error (debido a que las fluctuaciones de estas tres variables en temperatura ambiente no varian drasticamente basto con una observación para calcular cada error)
 como resultados obtuvimos un error de 47hPa para el sensor de presión, mientras que las de humedad y temperatura (provistas por el sensor DHT22) dieron un error despresiable.
+
+## Relación con el firmware actual
+
+Este registro describe resultados de calibración reportados por el equipo, no una compensación que el firmware aplique automáticamente. En `CODIGO Y SIMULACIONES/src/main.cpp`, `readWaterDistanceCm()` convierte el tiempo del eco en distancia y `calculateWaterLevelPercent()` la normaliza con `TANK_DEPTH_CM = 138.5`; no suma la corrección de +0,8 cm descrita arriba. La temperatura y humedad se usan tal como las devuelve el DHT22, y la presión se convierte de Pa a hPa (`bmp.readPressure() / 100.0`) sin aplicar una corrección de 47 hPa. El valor LDR se escala desde el ADC a porcentaje y no aparece en esta tabla de calibración.
+
+Por lo tanto, no se debe describir el sistema como si ya aplicara estas compensaciones. Antes de usar el nodo para mediciones cuantitativas, se debe definir una calibración vigente, repetir las referencias bajo condiciones controladas, incorporar las compensaciones acordadas en el firmware y registrar una validación posterior. El índice de evaporación continúa siendo una estimación normalizada, no evaporación física en mm/día.
