@@ -6,10 +6,11 @@
 #include <WebServer.h>
 #include <WiFi.h>
 #include <Wire.h>
-#include "secrets.h"
 #include <PubSubClient.h>
+#include <ArduinoOTA.h>
 #include <stdio.h>
 #include <string.h>
+#include "secrets.h"
 
 #define DHT_PIN 15
 #define DHT_TYPE DHT22
@@ -38,14 +39,17 @@ const char* MQTT_STATUS_TOPIC = "sabana/borda/hidrico/status";
 const char* MQTT_ALARM_COMMAND_TOPIC = "sabana/borda/hidrico/command/alarm";
 
 // =========================================================================
-// CALIBRACIÓN DEL EMBALSE
-// distancia en cm desde el sensor hasta el suelo vacío
+// CALIBRACIÓN DEL EMBALSE Y SENSORES
 const float TANK_DEPTH_CM = 138.5; 
+const float OFFSET_HCSR = 0.82;
+const float OFFSET_BPM = 47.0;
+const float DEFAULT_PRESSURE_HPA = 752.0;
 // =========================================================================
 
 const uint16_t HISTORY_SIZE = 30;
 const uint32_t SAMPLE_PERIOD_MS = 2000;
 const uint32_t BUTTON_DEBOUNCE_MS = 300;
+const uint32_t CHART_UPDATE_INTERVAL_MS = 20000;
 
 DHT dht(DHT_PIN, DHT_TYPE);
 Adafruit_BMP280 bmp;
@@ -66,6 +70,8 @@ struct SensorReadings {
   float temperature;
   float humidity;
   float pressure;
+  float rawPressure;
+  uint32_t lastValidPressureTime;
   float solarRadiation;
   float evaporationRisk;
   AlertState state;
@@ -79,9 +85,11 @@ uint16_t historyIndex = 0;
 uint16_t historyCount = 0;
 
 SemaphoreHandle_t dataMutex;
+SemaphoreHandle_t i2cMutex;
 TaskHandle_t sensorTaskHandle;
 bool bmpAvailable = false;
 bool alarmMuted = false;
+bool otaInitialized = false;
 
 uint8_t currentDisplayPage = 0;
 const uint8_t MAX_PAGES = 4;
@@ -133,13 +141,17 @@ void publishLatestReading() {
   if (!mqttClient.connected()) return;
   SensorReadings data = getCurrentData();
   if (data.timestamp == 0 || data.timestamp == lastPublishedTimestamp) return;
+
+  float safePressure = isnan(data.pressure) ? DEFAULT_PRESSURE_HPA : data.pressure;
+  float safeEvap = isnan(data.evaporationRisk) ? 0.0 : data.evaporationRisk;
+
   char payload[480];
   uint32_t sequence = ++messageSequence;
   int length = snprintf(payload, sizeof(payload),
     "{\"device_id\":\"%s\",\"message_id\":\"%s-%lu\",\"waterLevel\":%.1f,\"waterDistance\":%.1f,\"temperature\":%.1f,\"humidity\":%.1f,\"pressure\":%.1f,\"solarRadiation\":%.1f,\"evaporationRisk\":%.1f,\"state\":\"%s\",\"alarmMuted\":%s,\"timestamp\":%lu}",
     DEVICE_ID, DEVICE_ID, (unsigned long)sequence,
     data.waterLevel, data.waterDistance, data.temperature, data.humidity,
-    data.pressure, data.solarRadiation, data.evaporationRisk,
+    safePressure, data.solarRadiation, safeEvap,
     stateToText(data.state), data.alarmMuted ? "true" : "false",
     (unsigned long)(data.timestamp / 1000));
   if (length > 0 && length < (int)sizeof(payload) &&
@@ -160,7 +172,8 @@ float readWaterDistanceCm() {
     return NAN;
   }
 
-  return duration * 0.0343 / 2.0;
+  float distance = duration * 0.0343 / 2.0;
+  return distance + OFFSET_HCSR;
 }
 
 float calculateWaterLevelPercent(float distanceCm) {
@@ -176,15 +189,19 @@ float readSolarRadiationPercent() {
 }
 
 float calculateEvaporationRisk(float temperature, float humidity, float solarRadiation, float pressure) {
+  float validPressure = isnan(pressure) ? DEFAULT_PRESSURE_HPA : pressure;
   float tempScore = constrain((temperature - 20.0) * 5.0, 0, 100);
   float dryAirScore = constrain(100.0 - humidity, 0, 100);
   float radiationScore = constrain(solarRadiation, 0, 100);
-  float lowPressureScore = constrain((1013.25 - pressure) * 5.0, 0, 100);
+  float lowPressureScore = constrain((1013.25 - validPressure) * 5.0, 0, 100);
 
-  return (tempScore * 0.35) +
-         (dryAirScore * 0.30) +
-         (radiationScore * 0.25) +
-         (lowPressureScore * 0.10);
+  return constrain(
+    (tempScore * 0.35) +
+    (dryAirScore * 0.30) +
+    (radiationScore * 0.25) +
+    (lowPressureScore * 0.10),
+    0.0, 100.0
+  );
 }
 
 AlertState evaluateState(const SensorReadings& data) {
@@ -252,12 +269,11 @@ void setAlarmMuted(bool muted) {
 
 void handlePageButton() {
   bool buttonState = digitalRead(PAGE_BUTTON_PIN);
-  bool buttonPressed = previousPageButtonState == HIGH && buttonState == LOW;
+  bool stateChanged = (buttonState != previousPageButtonState);
 
-  if (buttonPressed && millis() - lastPageButtonToggle > BUTTON_DEBOUNCE_MS) {
+  if (stateChanged && (millis() - lastPageButtonToggle > BUTTON_DEBOUNCE_MS)) {
     currentDisplayPage = (currentDisplayPage + 1) % MAX_PAGES;
     lastPageButtonToggle = millis();
-    
     updateDisplay(getCurrentData());
   }
 
@@ -265,6 +281,7 @@ void handlePageButton() {
 }
 
 void showMessage(const char* firstLine, const char* secondLine = "") {
+  if (i2cMutex != NULL) xSemaphoreTake(i2cMutex, portMAX_DELAY);
   display.clearDisplay();
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
@@ -272,9 +289,11 @@ void showMessage(const char* firstLine, const char* secondLine = "") {
   display.println(firstLine);
   display.println(secondLine);
   display.display();
+  if (i2cMutex != NULL) xSemaphoreGive(i2cMutex);
 }
 
 void updateDisplay(const SensorReadings& data) {
+  if (i2cMutex != NULL) xSemaphoreTake(i2cMutex, portMAX_DELAY);
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
 
@@ -330,28 +349,52 @@ void updateDisplay(const SensorReadings& data) {
 
     case 3:
       display.setTextSize(1);
-      display.print("Alarma: ");
-      display.println(data.alarmMuted ? "SILENCIADA" : "ACTIVA");
-      display.println("");
-      display.println("IP Red Local (AP):");
+      display.print("Red:");
+      {
+        String redStr = WiFi.SSID();
+        if (redStr.length() == 0) redStr = WIFI_SSID;
+        if (redStr.length() > 16) redStr = redStr.substring(0, 16);
+        display.println(redStr);
+      }
+      display.print("IP: ");
       display.println(WiFi.localIP());
-      display.println("");
-      display.print("Distancia: ");
+      display.print("Alrm:");
+      display.println(data.alarmMuted ? "SILENCIO" : "ACTIVA");
+      display.print("Dist:");
       display.print(data.waterDistance, 1);
       display.println(" cm");
       break;
   }
   
   display.display();
+  if (i2cMutex != NULL) xSemaphoreGive(i2cMutex);
 }
 
 bool readSensors(SensorReadings& data) {
+  static float ultimaPresionValida = DEFAULT_PRESSURE_HPA;
+  static uint32_t tiempoUltimaPresion = 0;
+
+  uint32_t ahora = millis();
   data.temperature = dht.readTemperature();
   data.humidity = dht.readHumidity();
   data.waterDistance = readWaterDistanceCm();
   data.waterLevel = calculateWaterLevelPercent(data.waterDistance);
   data.solarRadiation = readSolarRadiationPercent();
-  data.pressure = bmpAvailable ? bmp.readPressure() / 100.0 : NAN;
+
+  float lecturaPresion = NAN;
+  if (bmpAvailable) {
+    if (i2cMutex != NULL) xSemaphoreTake(i2cMutex, portMAX_DELAY);
+    lecturaPresion = (bmp.readPressure() / 100.0) + OFFSET_BPM;
+    if (i2cMutex != NULL) xSemaphoreGive(i2cMutex);
+  }
+  data.rawPressure = lecturaPresion;
+  if (!isnan(lecturaPresion) && lecturaPresion > 500.0) {
+    ultimaPresionValida = lecturaPresion;
+    tiempoUltimaPresion = ahora;
+  }
+  data.pressure = ultimaPresionValida;
+  data.lastValidPressureTime = tiempoUltimaPresion;
+
   data.evaporationRisk = calculateEvaporationRisk(
     data.temperature,
     data.humidity,
@@ -360,11 +403,11 @@ bool readSensors(SensorReadings& data) {
   );
   data.state = evaluateState(data);
   data.alarmMuted = alarmMuted;
-  data.timestamp = millis();
+  data.timestamp = ahora;
 
   return !isnan(data.temperature) &&
-       !isnan(data.humidity) &&
-       !isnan(data.waterDistance);
+         !isnan(data.humidity) &&
+         !isnan(data.waterDistance);
 }
 
 void storeReading(const SensorReadings& data) {
@@ -395,11 +438,11 @@ bool requireAuth() {
 
 String dashboardHtml(const SensorReadings& data) {
   String html;
-  html.reserve(7000);
+  html.reserve(12000);
   html += F("<!doctype html><html lang='es'><head><meta charset='utf-8'>");
   html += F("<meta name='viewport' content='width=device-width,initial-scale=1'>");
-  html += F("<meta http-equiv='refresh' content='5'>");
-  html += F("<title>Tablero hidrico local</title><style>");
+  html += F("<title>Tablero hidrico local</title>");
+  html += F("<script src='https://cdn.jsdelivr.net/npm/chart.js'></script><style>");
   html += F("body{font-family:Arial,sans-serif;margin:0;background:#eef4f8;color:#10202b}");
   html += F("header{background:#0c5c75;color:white;padding:18px 22px}");
   html += F("main{padding:18px;max-width:980px;margin:auto}");
@@ -407,27 +450,39 @@ String dashboardHtml(const SensorReadings& data) {
   html += F(".card{background:white;border:1px solid #d4e0e6;border-radius:8px;padding:14px}");
   html += F(".value{font-size:28px;font-weight:700;margin-top:6px}");
   html += F(".state{font-size:34px;font-weight:800}.NORMAL{color:#16833a}.ALERTA{color:#a87400}.CRITICO{color:#b3261e}");
-  html += F("button{border:0;border-radius:6px;background:#0c5c75;color:white;padding:12px 16px;font-weight:700}");
+  html += F("button{border:0;border-radius:6px;background:#0c5c75;color:white;padding:12px 16px;font-weight:700;cursor:pointer}");
   html += F("table{width:100%;border-collapse:collapse;background:white;margin-top:12px}td,th{padding:8px;border-bottom:1px solid #dbe6eb;text-align:left}");
+  html += F(".chart-container{position:relative;height:300px;width:100%;}");
   html += F("</style></head><body><header><h1>Tablero de control local</h1><p>Prototipo IoT de monitoreo de disponibilidad hidrica</p></header><main>");
-  html += "<section class='card'><div>Estado actual</div><div class='state ";
+  html += "<section class='card'><div>Estado actual</div><div id='val-state' class='state ";
   html += stateToText(data.state);
   html += "'>";
   html += stateToText(data.state);
-  html += F("</div></section><section class='grid'>");
-  html += "<div class='card'>Nivel<div class='value'>" + String(data.waterLevel, 1) + F("%</div></div>");
-  html += "<div class='card'>Distancia<div class='value'>" + String(data.waterDistance, 1) + F(" cm</div></div>");
-  html += "<div class='card'>Temperatura<div class='value'>" + String(data.temperature, 1) + F(" C</div></div>");
-  html += "<div class='card'>Humedad<div class='value'>" + String(data.humidity, 1) + F("%</div></div>");
-  html += "<div class='card'>Presion<div class='value'>" + String(data.pressure, 1) + F(" hPa</div></div>");
-  html += "<div class='card'>Radiacion<div class='value'>" + String(data.solarRadiation, 1) + F("%</div></div>");
-  html += "<div class='card'>Riesgo evaporacion<div class='value'>" + String(data.evaporationRisk, 1) + F("%</div></div>");
-  html += "<div class='card'>Alarma<div class='value'>";
+  html += F("</div></section><section class='grid' style='margin-top:12px'>");
+  html += "<div class='card'>Nivel<div class='value' id='val-level'>" + String(data.waterLevel, 1) + F("%</div></div>");
+  html += "<div class='card'>Distancia<div class='value' id='val-dist'>" + String(data.waterDistance, 1) + F(" cm</div></div>");
+  html += "<div class='card'>Temperatura<div class='value' id='val-temp'>" + String(data.temperature, 1) + F(" C</div></div>");
+  html += "<div class='card'>Humedad<div class='value' id='val-hum'>" + String(data.humidity, 1) + F("%</div></div>");
+  html += "<div class='card'>Presion<div class='value' id='val-pres'>" + String(data.pressure, 1) + F(" hPa</div></div>");
+  html += "<div class='card'>Radiacion<div class='value' id='val-rad'>" + String(data.solarRadiation, 1) + F("%</div></div>");
+  html += "<div class='card'>Riesgo evaporacion<div class='value' id='val-evap'>" + String(data.evaporationRisk, 1) + F("%</div></div>");
+  html += "<div class='card'>Alarma<div class='value' id='val-alarm'>";
   html += data.alarmMuted ? "Silenciada" : "Activa";
   html += F("</div></div></section><section class='card' style='margin-top:12px'>");
-  html += F("<form action='/alarm/off' method='post'><button>Desactivar alarma fisica</button></form>");
-  html += F("<form action='/alarm/on' method='post' style='margin-top:8px'><button>Reactivar alarma fisica</button></form>");
-  html += F("</section><section><h2>Historico reciente</h2><table><tr><th>t (s)</th><th>Nivel</th><th>Temp</th><th>Hum</th><th>Pres</th><th>Rad</th><th>Riesgo</th><th>Estado</th></tr>");
+  html += F("<form action='/alarm/off' method='post' style='display:inline-block'><button>Desactivar alarma fisica</button></form> ");
+  html += F("<form action='/alarm/on' method='post' style='display:inline-block;margin-left:8px'><button>Reactivar alarma fisica</button></form>");
+  html += F("</section>");
+
+  html += F("<section class='card' style='margin-top:12px'>");
+  html += F("<h2>Evolucion del Nivel de Agua (%)</h2>");
+  html += F("<div class='chart-container'><canvas id='waterChart'></canvas></div>");
+  html += F("</section>");
+
+  html += F("<section style='margin-top:12px;overflow-x:auto;'><h2>Historico reciente (Ultimas 30 lecturas)</h2>");
+  html += F("<table id='historyTable'><thead><tr><th>t (s)</th><th>Nivel</th><th>Temp</th><th>Hum</th><th>Pres</th><th>Rad</th><th>Riesgo</th><th>Estado</th></tr></thead><tbody>");
+
+  String chartDataJS = "[";
+  String chartLabelsJS = "[";
 
   xSemaphoreTake(dataMutex, portMAX_DELAY);
   for (uint16_t i = 0; i < historyCount; i++) {
@@ -437,10 +492,63 @@ String dashboardHtml(const SensorReadings& data) {
     html += "%</td><td>" + String(row.temperature, 1) + "</td><td>" + String(row.humidity, 1);
     html += "</td><td>" + String(row.pressure, 1) + "</td><td>" + String(row.solarRadiation, 1) + "</td><td>" + String(row.evaporationRisk, 1);
     html += "</td><td>" + String(stateToText(row.state)) + "</td></tr>";
+
+    chartDataJS += String(row.waterLevel, 1);
+    chartLabelsJS += "'" + String(row.timestamp / 1000) + "s'";
+    if (i < historyCount - 1) {
+      chartDataJS += ",";
+      chartLabelsJS += ",";
+    }
   }
   xSemaphoreGive(dataMutex);
 
-  html += F("</table></section></main></body></html>");
+  chartDataJS += "]";
+  chartLabelsJS += "]";
+  html += F("</tbody></table></section></main>");
+
+  html += F("<script>");
+  html += "let lastChartUpdate = Date.now();";
+  html += "let lastTimestamp = 0;";
+  html += "const chartUpdateInterval = " + String(CHART_UPDATE_INTERVAL_MS) + ";";
+  html += "if (typeof Chart !== 'undefined') {";
+  html += "  const ctx = document.getElementById('waterChart').getContext('2d');";
+  html += "  window.myLineChart = new Chart(ctx, {";
+  html += "    type: 'line',";
+  html += "    data: { labels: " + chartLabelsJS + ", datasets: [{ label: 'Nivel de Agua (%)', data: " + chartDataJS + ",";
+  html += "      borderColor: '#0c5c75', backgroundColor: 'rgba(12, 92, 117, 0.2)', borderWidth: 2, pointBackgroundColor: '#b3261e', pointRadius: 4, fill: true, tension: 0.3 }] },";
+  html += "    options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, max: 100 } }, plugins: { legend: { display: false } } }";
+  html += "  });";
+  html += "}";
+  html += F("setInterval(async () => {");
+  html += F("  try {");
+  html += F("    const res = await fetch('/api/status');");
+  html += F("    if (!res.ok) return;");
+  html += F("    const d = await res.json();");
+  html += F("    document.getElementById('val-level').textContent = d.waterLevel.toFixed(1) + '%';");
+  html += F("    document.getElementById('val-dist').textContent = d.waterDistance.toFixed(1) + ' cm';");
+  html += F("    document.getElementById('val-temp').textContent = d.temperature.toFixed(1) + ' C';");
+  html += F("    document.getElementById('val-hum').textContent = d.humidity.toFixed(1) + '%';");
+  html += F("    document.getElementById('val-pres').textContent = d.pressure.toFixed(1) + ' hPa';");
+  html += F("    document.getElementById('val-rad').textContent = d.solarRadiation.toFixed(1) + '%';");
+  html += F("    document.getElementById('val-evap').textContent = d.evaporationRisk.toFixed(1) + '%';");
+  html += F("    document.getElementById('val-alarm').textContent = d.alarmMuted ? 'Silenciada' : 'Activa';");
+  html += F("    const st = document.getElementById('val-state'); st.textContent = d.state; st.className = 'state ' + d.state;");
+  html += F("    if (d.timestamp && d.timestamp !== lastTimestamp) {");
+  html += F("      lastTimestamp = d.timestamp;");
+  html += F("      const tbody = document.getElementById('historyTable').getElementsByTagName('tbody')[0];");
+  html += F("      const row = tbody.insertRow(-1);");
+  html += F("      row.innerHTML = `<td>${d.timestamp}</td><td>${d.waterLevel.toFixed(1)}%</td><td>${d.temperature.toFixed(1)}</td><td>${d.humidity.toFixed(1)}</td><td>${d.pressure.toFixed(1)}</td><td>${d.solarRadiation.toFixed(1)}</td><td>${d.evaporationRisk.toFixed(1)}</td><td>${d.state}</td>`;");
+  html += F("      if (tbody.rows.length > 30) tbody.deleteRow(0);");
+  html += F("    }");
+  html += F("    if (window.myLineChart && Date.now() - lastChartUpdate >= chartUpdateInterval) {");
+  html += F("      lastChartUpdate = Date.now();");
+  html += F("      window.myLineChart.data.labels.push(d.timestamp + 's');");
+  html += F("      window.myLineChart.data.datasets[0].data.push(d.waterLevel);");
+  html += F("      if (window.myLineChart.data.labels.length > 30) { window.myLineChart.data.labels.shift(); window.myLineChart.data.datasets[0].data.shift(); }");
+  html += F("      window.myLineChart.update();");
+  html += F("    }");
+  html += F("  } catch (e) {}");
+  html += F("}, 2000);</script></body></html>");
   return html;
 }
 
@@ -468,7 +576,8 @@ void handleStatusApi() {
   json += "\"solarRadiation\":" + String(data.solarRadiation, 2) + ",";
   json += "\"evaporationRisk\":" + String(data.evaporationRisk, 2) + ",";
   json += "\"state\":\"" + String(stateToText(data.state)) + "\",";
-  json += "\"alarmMuted\":" + String(data.alarmMuted ? "true" : "false");
+  json += "\"alarmMuted\":" + String(data.alarmMuted ? "true" : "false") + ",";
+  json += "\"timestamp\":" + String(data.timestamp / 1000);
   json += "}";
   server.send(200, "application/json", json);
 }
@@ -495,6 +604,19 @@ void setupDashboardServer() {
   server.begin();
 }
 
+void setupOTA() {
+  ArduinoOTA.setHostname("esp32-hidrico");
+  ArduinoOTA.setPassword(DASHBOARD_PASSWORD);
+  ArduinoOTA.onStart([]() { Serial.println("Iniciando actualizacion OTA..."); });
+  ArduinoOTA.onEnd([]() { Serial.println("\nActualizacion OTA completada con exito."); });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    Serial.printf("Progreso OTA: %u%%\r", (progress / (total / 100)));
+  });
+  ArduinoOTA.onError([](ota_error_t error) { Serial.printf("Error OTA [%u]\n", error); });
+  ArduinoOTA.begin();
+  otaInitialized = true;
+}
+
 void printSerialReport(const SensorReadings& data) {
   Serial.println("=========================================");
   Serial.println("       DATOS DE SENSORES EN TIEMPO REAL  ");
@@ -503,11 +625,19 @@ void printSerialReport(const SensorReadings& data) {
   Serial.print("Distancia HC-SR04:   "); Serial.print(data.waterDistance); Serial.println(" cm");
   Serial.print("Temperatura DHT22:   "); Serial.print(data.temperature); Serial.println(" C");
   Serial.print("Humedad DHT22:       "); Serial.print(data.humidity); Serial.println(" %");
-  Serial.print("Presion BMP280:      "); Serial.print(data.pressure); Serial.println(" hPa");
+  Serial.print("Presion Filtrada:    "); Serial.print(data.pressure); Serial.println(" hPa");
+  Serial.print("Presion Cruda BMP:   "); Serial.print(data.rawPressure); Serial.println(" hPa");
+  Serial.print("Tiempo sin act. BMP: ");
+  if (data.lastValidPressureTime == 0) {
+    Serial.println("Sin lecturas validas aun");
+  } else {
+    unsigned long segundosInactivo = (millis() - data.lastValidPressureTime) / 1000;
+    Serial.print(segundosInactivo); Serial.println(" segundos");
+  }
   Serial.print("Radiacion (LDR):     "); Serial.print(data.solarRadiation); Serial.println(" %");
   Serial.print("Riesgo Evaporacion:  "); Serial.print(data.evaporationRisk); Serial.println(" %");
   Serial.print("Estado de Alerta:    "); Serial.println(stateToText(data.state));
-  Serial.print("Alarma Sonora:       "); Serial.println(data.alarmMuted ? "SILENCIADA (Web)" : "ACTIVA");
+  Serial.print("Alarma Sonora:       "); Serial.println(data.alarmMuted ? "SILENCIADA" : "ACTIVA");
   Serial.println("=========================================\n");
 }
 
@@ -536,6 +666,9 @@ void sensorTask(void* parameter) {
 void setup() {
   Serial.begin(115200);
 
+  dataMutex = xSemaphoreCreateMutex();
+  i2cMutex = xSemaphoreCreateMutex();
+
   Wire.begin(I2C_SDA, I2C_SCL);
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
     Serial.println("Error iniciando pantalla OLED externa");
@@ -557,8 +690,8 @@ void setup() {
   previousPageButtonState = digitalRead(PAGE_BUTTON_PIN);
 
   if (!bmpAvailable) {
-    showMessage("Error BMP280", "Revise I2C");
-    Serial.println("Error iniciando BMP280");
+    showMessage("Error BMP280", "Usando pres. base");
+    Serial.println("Error iniciando BMP280; usando presion de respaldo");
     delay(2000);
   }
 
@@ -568,9 +701,8 @@ void setup() {
   mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
   mqttClient.setCallback(mqttCallback);
   mqttClient.setBufferSize(512);
-  showMessage("Conectando Wi-Fi", "Iniciando tablero...");
+  showMessage("Conectando Wi-Fi", WIFI_SSID);
 
-  dataMutex = xSemaphoreCreateMutex();
   setupDashboardServer();
 
   xTaskCreatePinnedToCore(
@@ -600,11 +732,13 @@ void loop() {
   } else {
     if (!wifiWasConnected) {
       wifiWasConnected = true;
+      if (!otaInitialized) setupOTA();
       Serial.print("Tablero local: http://");
       Serial.println(WiFi.localIP());
       Serial.print("Gateway MQTT: ");
       Serial.println(MQTT_BROKER);
     }
+    ArduinoOTA.handle();
     if (!mqttClient.connected() && now - lastMqttReconnectAttempt >= 5000) {
       lastMqttReconnectAttempt = now;
       connectMqtt();
