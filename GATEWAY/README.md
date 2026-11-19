@@ -146,6 +146,8 @@ El gateway conserva las lecturas MQTT que recibe; limita el reenvío a una entra
 
 `ai_dashboard.py` es un proceso independiente; necesita que `gateway.py` haya inicializado la tabla `telemetry`. Cada ciclo consulta la ventana reciente (`AI_REPORT_WINDOW_SECONDS`, predeterminado 600 s), requiere tres lecturas (`AI_REPORT_MIN_READINGS`) y prepara métricas con una muestra distribuida de hasta 12 registros. Envía esas métricas y muestras a Gemini mediante `GEMINI_API_KEY`; no envía credenciales MQTT. Gemini devuelve resumen, tendencia observada, observaciones, acción sugerida para revisión humana e incertidumbre. El reporte queda en `ai_reports`.
 
+Para el modelo predeterminado `gemini-3-flash-preview`, la solicitud usa `thinkingLevel=MINIMAL` y un máximo de 2048 tokens. Gemini 3 incluye los tokens de razonamiento interno en el límite de salida; si el modelo responde con `finishReason=MAX_TOKENS` o un JSON truncado, el ciclo marca la respuesta como inválida y no presenta el fragmento como resumen. El siguiente ciclo vuelve a intentar con nuevas lecturas. Consulta la [guía de razonamiento de Gemini](https://ai.google.dev/gemini-api/docs/thinking) y la [referencia de generateContent](https://ai.google.dev/api/generate-content) para los límites y el campo `finishReason`.
+
 Inicia el tablero desde otra terminal, conservando activo `gateway.py`:
 
 ```bash

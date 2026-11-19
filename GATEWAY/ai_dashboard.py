@@ -176,6 +176,8 @@ def parse_report_json(text: str) -> dict[str, Any]:
         start = cleaned.find("{")
         end = cleaned.rfind("}")
         if start < 0 or end <= start:
+            if cleaned.lstrip().startswith("{"):
+                raise ValueError("Gemini devolvió un JSON incompleto; no se guardó el fragmento como resumen.") from original_error
             # Keep a useful model response visible even if the preview ignores JSON mode.
             return {
                 "summary": cleaned[:1200],
@@ -212,10 +214,14 @@ def request_report(device_id: str, metrics: dict[str, Any]) -> tuple[dict[str, A
         "generationConfig": {
             "responseMimeType": "application/json",
             "responseJsonSchema": REPORT_SCHEMA,
-            "maxOutputTokens": 1000,
+            # Gemini 3 counts internal reasoning against this hard response cap.
+            # A low thinking level leaves most of the budget for the small JSON report.
+            "maxOutputTokens": 2048,
             "temperature": 0.2,
         },
     }
+    if GEMINI_MODEL == "gemini-3-flash-preview":
+        request_body["generationConfig"]["thinkingConfig"] = {"thinkingLevel": "MINIMAL"}
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
     last_error: requests.RequestException | None = None
     for attempt in range(3):
@@ -239,6 +245,10 @@ def request_report(device_id: str, metrics: dict[str, Any]) -> tuple[dict[str, A
                 raise ValueError(f"Gemini devolvió una respuesta HTTP no-JSON (HTTP {response.status_code})") from exc
             if not isinstance(api_payload, dict):
                 raise ValueError("Gemini devolvió una respuesta HTTP con formato inesperado")
+            candidates = api_payload.get("candidates")
+            finish_reason = candidates[0].get("finishReason") if isinstance(candidates, list) and candidates and isinstance(candidates[0], dict) else None
+            if finish_reason == "MAX_TOKENS":
+                raise ValueError("Gemini agotó el límite de tokens y devolvió una respuesta incompleta; el reporte no se guardó.")
             result = parse_report_json(extract_response_text(api_payload))
             required = ("summary", "trend", "observations", "suggested_action", "uncertainty")
             if any(key not in result for key in required):
